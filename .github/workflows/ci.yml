@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build module zip
+        run: npm run build
+
+      # build.mjs regenerates docs/update.json from module.prop. If the commit
+      # bumped the version without rebuilding, the manifest would advertise a
+      # stale versionCode and auto-update would never fire — fail loudly here.
+      - name: Auto-update manifest is in sync with module.prop
+        run: git diff --exit-code docs/update.json docs/index.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: battery_info-zip
+          path: dist/battery_info.zip
+          if-no-files-found: error

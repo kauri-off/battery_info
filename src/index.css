@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+/* Design tokens. Light values are the defaults; the dark set below is a
+   selected palette for the dark surface, not an inversion of this one.
+   Chart colors live here too — SVG resolves CSS vars, so switching themes
+   repaints the charts without a React re-render. */
+@theme {
+	--font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+	--color-plane: #f9f9f7;
+	--color-surface: #fcfcfb;
+	--color-raised: #f0efec;
+	--color-ink: #0b0b0b;
+	--color-ink-2: #52514e;
+	--color-muted: #898781;
+	--color-hairline: rgb(11 11 11 / 0.1);
+	--color-grid: #e1e0d9;
+	--color-axis: #c3c2b7;
+
+	/* Categorical slots 1-3 of the reference palette; validated all-pairs
+	   against both surfaces (CVD ΔE 9.2 light / 9.4 dark). */
+	--color-series-level: #2a78d6;
+	--color-series-current: #eb6834;
+	--color-series-temp: #1baf7a;
+
+	/* Diverging pair for signed current: charging vs discharging. */
+	--color-pos: #2a78d6;
+	--color-neg: #e34948;
+
+	/* Status palette — fixed, never themed, never reused as a series color. */
+	--color-good: #0ca30c;
+	--color-warning: #fab219;
+	--color-critical: #d03b3b;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--color-plane: #0d0d0d;
+		--color-surface: #1a1a19;
+		--color-raised: #232322;
+		--color-ink: #ffffff;
+		--color-ink-2: #c3c2b7;
+		--color-muted: #898781;
+		--color-hairline: rgb(255 255 255 / 0.1);
+		--color-grid: #2c2c2a;
+		--color-axis: #383835;
+
+		--color-series-level: #3987e5;
+		--color-series-current: #d95926;
+		--color-series-temp: #199e70;
+
+		--color-pos: #3987e5;
+		--color-neg: #e66767;
+	}
+}
+
+html {
+	color-scheme: light dark;
+	background: var(--color-plane);
+}
+
+body {
+	margin: 0;
+	background: var(--color-plane);
+	color: var(--color-ink);
+	font-family: var(--font-sans);
+	-webkit-tap-highlight-color: transparent;
+	overscroll-behavior-y: contain;
+}
+
+/* Recharts marks its root SVG focusable, so a tap leaves a focus ring behind
+   and a drag along the line starts a text selection over the tick labels.
+   Neither means anything here — the tooltip already follows the touch. */
+.recharts-wrapper,
+.recharts-wrapper * {
+	outline: none;
+	-webkit-user-select: none;
+	user-select: none;
+}

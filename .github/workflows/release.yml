@@ -1,0 +1,51 @@
+name: Release
+
+# Tag a commit `vX.Y.Z` (matching module.prop) and push the tag; this builds the
+# zip and publishes it as a release asset. docs/update.json already points at
+# this exact URL, so the manager picks the update up once Pages redeploys.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build module zip
+        run: npm run build
+
+      # The tag must match module.prop, or the release asset would land at a URL
+      # update.json does not reference.
+      - name: Tag matches module.prop version
+        run: |
+          prop="$(grep '^version=' module/module.prop | cut -d= -f2)"
+          if [ "$prop" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} != module.prop version ${prop}"
+            exit 1
+          fi
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/battery_info.zip \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file docs/CHANGELOG.md

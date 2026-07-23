@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Battery Info Logger — KernelSU Next module</title>
+<meta name="description" content="A KernelSU Next WebUI module that logs battery metrics over time, charts them, and exports the history as CSV." />
+<style>
+/* Design tokens mirror src/index.css so the site and the WebUI read as one
+   thing. Light values are the defaults; the dark set is a selected palette. */
+:root {
+	--plane: #f9f9f7;
+	--surface: #fcfcfb;
+	--raised: #f0efec;
+	--ink: #0b0b0b;
+	--ink-2: #52514e;
+	--muted: #898781;
+	--hairline: rgb(11 11 11 / 0.1);
+	--level: #2a78d6;
+	--current: #eb6834;
+	--temp: #1baf7a;
+	--good: #0ca30c;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--plane: #0d0d0d;
+		--surface: #1a1a19;
+		--raised: #232322;
+		--ink: #ffffff;
+		--ink-2: #c3c2b7;
+		--muted: #898781;
+		--hairline: rgb(255 255 255 / 0.1);
+		--level: #3987e5;
+		--current: #d95926;
+		--temp: #199e70;
+	}
+}
+
+* { box-sizing: border-box; }
+html {
+	color-scheme: light dark;
+	background: var(--plane);
+	-webkit-text-size-adjust: 100%;
+}
+body {
+	margin: 0;
+	padding: 0 1.25rem 5rem;
+	background: var(--plane);
+	color: var(--ink);
+	font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 52rem; margin: 0 auto; }
+
+header { padding: 4.5rem 0 3rem; }
+.badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.25rem 0.7rem;
+	border: 1px solid var(--hairline);
+	border-radius: 999px;
+	background: var(--surface);
+	color: var(--ink-2);
+	font-size: 0.8125rem;
+	letter-spacing: 0.01em;
+}
+.dot {
+	width: 0.5rem;
+	height: 0.5rem;
+	border-radius: 50%;
+	background: var(--good);
+}
+h1 {
+	margin: 1.25rem 0 0;
+	font-size: clamp(2.25rem, 7vw, 3.25rem);
+	line-height: 1.1;
+	letter-spacing: -0.02em;
+	font-weight: 650;
+}
+.lede {
+	margin: 1rem 0 0;
+	max-width: 38rem;
+	font-size: 1.125rem;
+	color: var(--ink-2);
+}
+
+h2 {
+	margin: 3.5rem 0 1rem;
+	font-size: 1.0625rem;
+	font-weight: 620;
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+h3 { margin: 0 0 0.35rem; font-size: 1rem; font-weight: 620; }
+p { margin: 0 0 1rem; }
+a { color: var(--level); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; }
+.btn {
+	display: inline-block;
+	padding: 0.6rem 1.1rem;
+	border: 1px solid var(--hairline);
+	border-radius: 0.6rem;
+	background: var(--surface);
+	color: var(--ink);
+	font-size: 0.9375rem;
+	font-weight: 550;
+	text-decoration: none;
+}
+.btn:hover { background: var(--raised); }
+.btn-primary {
+	background: var(--level);
+	border-color: transparent;
+	color: #fff;
+}
+.btn-primary:hover { filter: brightness(1.08); background: var(--level); }
+
+.grid {
+	display: grid;
+	gap: 1rem;
+	grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+}
+.card {
+	padding: 1.1rem 1.2rem;
+	border: 1px solid var(--hairline);
+	border-radius: 0.75rem;
+	background: var(--surface);
+}
+.card p { margin: 0; color: var(--ink-2); font-size: 0.9375rem; }
+.rule { width: 2rem; height: 3px; border-radius: 2px; margin-bottom: 0.9rem; }
+
+ol, ul { margin: 0 0 1rem; padding-left: 1.35rem; }
+li { margin-bottom: 0.4rem; }
+li::marker { color: var(--muted); }
+
+code {
+	padding: 0.1rem 0.35rem;
+	border-radius: 0.3rem;
+	background: var(--raised);
+	font-family: ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, monospace;
+	font-size: 0.875em;
+}
+pre {
+	margin: 0 0 1rem;
+	padding: 1rem 1.1rem;
+	overflow-x: auto;
+	border: 1px solid var(--hairline);
+	border-radius: 0.75rem;
+	background: var(--surface);
+	line-height: 1.5;
+}
+pre code { padding: 0; background: none; font-size: 0.875rem; }
+
+footer {
+	margin-top: 4.5rem;
+	padding-top: 1.5rem;
+	border-top: 1px solid var(--hairline);
+	color: var(--muted);
+	font-size: 0.875rem;
+}
+footer a { color: var(--ink-2); }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+	<!-- The version text is stamped from module.prop by build.mjs; edit it there. -->
+	<span class="badge"><span class="dot"></span> <span id="version">v1.0.0</span> &middot; KernelSU Next</span>
+	<h1>Battery Info Logger</h1>
+	<p class="lede">
+		A KernelSU Next WebUI module that samples your battery on an interval, charts
+		the history in a dashboard, and exports the whole log as CSV.
+	</p>
+	<div class="actions">
+		<a class="btn btn-primary" href="https://github.com/kauri-off/battery_info/releases/latest/download/battery_info.zip">Download latest zip</a>
+		<a class="btn" href="https://github.com/kauri-off/battery_info">Source on GitHub</a>
+	</div>
+</header>
+
+<h2>What it does</h2>
+<div class="grid">
+	<div class="card">
+		<div class="rule" style="background: var(--level)"></div>
+		<h3>Background logging</h3>
+		<p>A daemon samples the battery every N seconds and appends a row to a
+		persistent CSV that survives module updates.</p>
+	</div>
+	<div class="card">
+		<div class="rule" style="background: var(--current)"></div>
+		<h3>Live dashboard</h3>
+		<p>Level, current, temperature, voltage, health, cycle count, drain rate and
+		ETA — plus three time-series charts.</p>
+	</div>
+	<div class="card">
+		<div class="rule" style="background: var(--temp)"></div>
+		<h3>CSV export</h3>
+		<p>The manager's Action button (or the WebUI) writes the log to
+		<code>/sdcard/Download</code>.</p>
+	</div>
+</div>
+
+<h2>Metrics logged</h2>
+<pre><code>epoch, iso, capacity, status, voltage_uv, current_ua, temp_dc,
+charge_counter_uah, cycle_count, health, charge_full, charge_full_design</code></pre>
+<p>
+	Read from <code>/sys/class/power_supply/battery</code>, falling back to
+	<code>google_battery</code> and then to the first supply exposing
+	<code>capacity</code>. Missing nodes are logged as empty fields.
+</p>
+
+<h2>Install</h2>
+<ol>
+	<li>Download <code>battery_info.zip</code> and copy it to the device.</li>
+	<li>KernelSU Next manager &rarr; <strong>Modules</strong> &rarr; install from
+	storage &rarr; pick the zip.</li>
+	<li>Reboot. Logging starts automatically at a 60&nbsp;s interval.</li>
+</ol>
+
+<h2>Auto-update</h2>
+<p>
+	The module ships an <code>updateJson</code> pointer, so the manager checks for
+	new versions on its own — no need to watch this page. When a release with a
+	higher <code>versionCode</code> lands, the module shows an update badge and
+	installs the new zip in place; your logged history is untouched.
+</p>
+<pre><code>updateJson=https://kauri-off.github.io/battery_info/update.json</code></pre>
+<p>
+	That manifest is <a href="update.json">served here</a> and regenerated from
+	<code>module.prop</code> at build time, so it can never drift from the shipped
+	version. Changelog: <a href="CHANGELOG.md">CHANGELOG.md</a>.
+</p>
+
+<h2>Build from source</h2>
+<pre><code>git clone https://github.com/kauri-off/battery_info.git
+cd battery_info
+npm install
+npm run build   # -&gt; dist/battery_info.zip</code></pre>
+<p>
+	The WebUI is React + Recharts bundled by Vite into a single self-contained
+	<code>index.html</code> — the WebView has no asset paths to resolve. Run
+	<code>npm run dev</code> to preview it in a browser with a mocked KernelSU
+	bridge, no device required.
+</p>
+
+<footer>
+	<a href="https://github.com/kauri-off/battery_info">github.com/kauri-off/battery_info</a>
+	&middot; built with KernelSU Next WebUI
+</footer>
+
+</main>
+</body>
+</html>
