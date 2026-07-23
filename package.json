@@ -1,6 +1,6 @@
 {
   "name": "battery-info-module",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "KernelSU Next WebUI module that logs battery metrics over time.",
   "type": "module",
