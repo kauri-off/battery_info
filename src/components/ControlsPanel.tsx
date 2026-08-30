@@ -87,8 +87,8 @@ export function ControlsPanel({
 
 			{!running && (
 				<p className="-mt-2 text-xs text-muted">
-					Nothing is being sampled. Starting the daemon is safe at any time —
-					it takes a lock, so a second copy can never run.
+					Nothing is being sampled. The daemon normally starts itself at boot
+					and runs until the next one; start it here if it was killed.
 				</p>
 			)}
 

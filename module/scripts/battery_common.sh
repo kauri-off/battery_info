@@ -13,10 +13,6 @@ CSV="$DATA_DIR/battery.csv"
 MODULE_DIR=/data/adb/modules/battery_info
 LOGGER="$MODULE_DIR/scripts/logger.sh"
 
-# The single-instance lock. /dev is tmpfs, so this file cannot outlive a boot,
-# and flock is held by the kernel, so it cannot outlive the daemon holding it.
-LOCKFILE=/dev/battery_info.lock
-
 CSV_HEADER="epoch,iso,capacity,status,voltage_uv,current_ua,temp_dc,charge_counter_uah,cycle_count,health,charge_full,charge_full_design"
 
 # Read a sysfs node, print empty string if missing/unreadable.
@@ -82,11 +78,13 @@ daemon_pid() {
 	pgrep -f "$MODULE_DIR/scripts/[l]ogger\.sh" 2>/dev/null | head -n 1
 }
 
-# Launch the daemon. Safe to call when one is already running: logger.sh takes
-# an flock and a second instance exits immediately, so callers never have to
-# check first and never race the instance service.sh starts at boot.
+# Launch the daemon unless one is already running. Deliberately the only place
+# that decides whether to spawn: logger.sh itself has no guard, so the worst a
+# wrong answer here can do is leave two loggers appending rows, where the same
+# mistake inside the daemon would mean nothing runs at all.
 start_daemon() {
 	[ -f "$LOGGER" ] || return 1
+	[ -n "$(daemon_pid)" ] && return 0
 	nohup sh "$LOGGER" >/dev/null 2>&1 &
 	return 0
 }

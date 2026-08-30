@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.1.1
+
+Fixes v1.1.0, whose lock could not work on Android and stopped the daemon from
+starting at all.
+
+`logger.sh` took an `flock` on a descriptor opened with `exec 9>`. Android's
+`sh` is mksh, which sets close-on-exec on descriptors opened that way, so the
+`flock` binary — a separate process — never received fd 9 and failed with
+`EBADF`. toybox reports that as exit 1, the very code it uses for "another
+process holds the lock", so the guard concluded a logger was already running
+and exited.
+
+The lock is gone. `logger.sh` now has no single-instance guard of any kind; the
+check for an existing instance lives in `start_daemon()`, the only thing that
+spawns it, where a wrong answer costs a duplicate row rather than silence.
+
 ## v1.1.0
 
 Fixes a bug that could stop the logger permanently, and makes the WebUI able to

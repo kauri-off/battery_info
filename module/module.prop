@@ -1,7 +1,7 @@
 id=battery_info
 name=Battery Info Logger
-version=v1.1.0
-versionCode=3
+version=v1.1.1
+versionCode=4
 author=kauri-off
 description=Logs battery metrics over time with a WebUI dashboard and CSV export via the Action button.
 webuiIcon=icon.png

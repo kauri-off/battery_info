@@ -134,10 +134,10 @@ export function parseDaemonPid(stdout: string): number | null {
 	return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-// Whether the logger daemon is alive. This drives a badge, not a decision:
-// correctness rests on the flock in logger.sh, so a device whose shell lacks
-// pgrep reports "stopped" and still behaves correctly — Start just spawns an
-// instance that either takes the lock or exits.
+// Whether the logger daemon is alive. Drives the badge, and start_daemon uses
+// the same check to decide whether to spawn, so a device whose shell lacks
+// pgrep degrades to "always report stopped, always spawn" — a duplicate
+// logger at worst, never a silent one.
 export async function readDaemonPid(): Promise<number | null> {
 	try {
 		return parseDaemonPid(await sh(`. ${COMMON}; daemon_pid`));
@@ -146,9 +146,10 @@ export async function readDaemonPid(): Promise<number | null> {
 	}
 }
 
-// Start the daemon. Idempotent by construction: logger.sh takes an flock, so a
-// second instance exits at once. That is what lets the UI offer this without
-// checking first and without racing the one service.sh starts at boot.
+// Start the daemon if one is not already running; start_daemon does the check
+// on the device side. Normal operation never needs this — service.sh starts the
+// daemon at boot and it runs until the next one — it is the recovery path for a
+// daemon that was killed.
 export async function startDaemon(): Promise<void> {
 	await sh(`. ${COMMON}; start_daemon`);
 }

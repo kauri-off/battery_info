@@ -24,7 +24,7 @@ export type UseBattery = {
 	/** True while a log refetch is in flight, so charts can dim in place. */
 	refreshing: boolean;
 	setConfig: (next: Config) => Promise<void>;
-	/** Spawn the daemon. Idempotent — logger.sh's flock dedupes instances. */
+	/** Spawn the daemon if one is not already running. */
 	start: () => Promise<void>;
 	clear: () => Promise<void>;
 	exportLog: () => Promise<string>;

@@ -1,6 +1,6 @@
 {
-  "version": "v1.1.0",
-  "versionCode": 3,
-  "zipUrl": "https://github.com/kauri-off/battery_info/releases/download/v1.1.0/battery_info.zip",
+  "version": "v1.1.1",
+  "versionCode": 4,
+  "zipUrl": "https://github.com/kauri-off/battery_info/releases/download/v1.1.1/battery_info.zip",
   "changelog": "https://kauri-off.github.io/battery_info/CHANGELOG.md"
 }
