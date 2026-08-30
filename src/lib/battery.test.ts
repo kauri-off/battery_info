@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { derive, filterByRange, normCurrent, parseConfig, parseLog, parseRow } from "./battery";
+import {
+	derive, filterByRange, normCurrent, parseConfig, parseDaemonPid, parseLog, parseRow,
+} from "./battery";
 import { CSV_HEADER } from "./types";
 import type { BatteryRow } from "./types";
 
@@ -116,6 +118,32 @@ describe("parseConfig", () => {
 
 	it("rejects an interval below the daemon's floor", () => {
 		expect(parseConfig("LOG_INTERVAL=1\n").interval).toBe(60);
+	});
+});
+
+describe("parseDaemonPid", () => {
+	it("reads the pid pgrep printed", () => {
+		expect(parseDaemonPid("4321\n")).toBe(4321);
+		expect(parseDaemonPid("  4321  ")).toBe(4321);
+	});
+
+	it("takes the first pid when several matched", () => {
+		expect(parseDaemonPid("4321\n4322\n")).toBe(4321);
+	});
+
+	it("reports no daemon when nothing was printed", () => {
+		// pgrep exits 1 and prints nothing when it matches no process; a shell
+		// without pgrep at all prints nothing either. Both mean "not running".
+		expect(parseDaemonPid("")).toBeNull();
+		expect(parseDaemonPid("\n \n")).toBeNull();
+	});
+
+	it("rejects output that is not a pid", () => {
+		// A stray warning on stdout must never read as a live daemon.
+		expect(parseDaemonPid("pgrep: bad usage\n")).toBeNull();
+		expect(parseDaemonPid("0\n")).toBeNull();
+		expect(parseDaemonPid("-1\n")).toBeNull();
+		expect(parseDaemonPid("12.5\n")).toBeNull();
 	});
 });
 

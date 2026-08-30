@@ -14,8 +14,10 @@ Requires **KernelSU Next v3.3.0+** (WebUI and Action button support).
   an interval and appends a row to a persistent CSV.
 - A WebUI (open it from the module in the KSU Next manager) shows live stats
   (level, current, temp, voltage, health %, cycle count, drain rate, ETA), three
-  time-series charts (level, current, temperature), and controls to start/stop
-  logging, change the interval, clear the log, and export.
+  time-series charts (level, current, temperature), and controls to start the
+  daemon, pause/resume sampling, change the interval, clear the log, and export.
+  It reports whether the daemon is actually running, so a stopped one cannot
+  read as "logging on".
 - The manager's **Action** button (`action.sh`) exports the log to
   `/sdcard/Download/battery_info_<timestamp>.csv`.
 
@@ -53,8 +55,11 @@ The WebUI is React + Recharts, styled with Tailwind, bundled by Vite into a
 **single** `module/webroot/index.html` (JS and CSS inlined) — the WebView has no
 asset paths to resolve.
 
-Runtime data lives in `/data/adb/battery_info/` (`config.sh`, `battery.csv`,
-`logger.pid`) — outside the module dir, so it survives module updates.
+Runtime data lives in `/data/adb/battery_info/` (`config.sh`, `battery.csv`) —
+outside the module dir, so it survives module updates. The daemon's
+single-instance lock is an `flock` on `/dev/battery_info.lock` instead: `/dev`
+is tmpfs, so the lock cannot outlive a reboot, and the kernel releases it the
+moment the daemon dies, so it cannot go stale.
 
 ## Build
 

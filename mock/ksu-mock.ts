@@ -49,6 +49,9 @@ function makeCsv(): string {
 
 let csv = makeCsv();
 let config = "LOG_ENABLED=1\nLOG_INTERVAL=60\n";
+// Stands in for the logger daemon. Flip it from the devtools console with
+// __mockDaemon(false) to see the stopped state and the Start button.
+let daemonPid: number | null = 4321;
 
 // A live sample that drifts a little each poll, so the header actually moves.
 // It continues from the last logged sample — on device the two are one interval
@@ -70,6 +73,11 @@ const ok = (stdout: string): Result => ({ errno: 0, stdout, stderr: "" });
 
 function handle(command: string): Result {
 	if (command.includes("read_row")) return ok(liveRow());
+	if (command.includes("start_daemon")) {
+		daemonPid ??= 4321;
+		return ok("");
+	}
+	if (command.includes("daemon_pid")) return ok(daemonPid === null ? "" : `${daemonPid}\n`);
 	if (command.startsWith("cat") && command.includes("battery.csv")) return ok(csv);
 	if (command.startsWith("cat") && command.includes("config.sh")) return ok(config);
 
@@ -97,8 +105,14 @@ function handle(command: string): Result {
 declare global {
 	interface Window {
 		ksu: Record<string, (...args: never[]) => unknown>;
+		__mockDaemon: (running: boolean) => void;
 	}
 }
+
+window.__mockDaemon = (running: boolean) => {
+	daemonPid = running ? 4321 : null;
+	console.log("[ksu-mock] daemon", running ? "running" : "stopped");
+};
 
 window.ksu = {
 	exec(command: string, _optionsJson: string, callbackName: string) {

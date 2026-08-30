@@ -3,13 +3,12 @@
 # Logged data in /data/adb/battery_info is intentionally kept so you don't
 # lose history on an update/reinstall; delete it manually to reclaim space.
 
-DATA_DIR=/data/adb/battery_info
-PIDFILE="$DATA_DIR/logger.pid"
+# Match the daemon by identity, never by a recorded pid. Pid numbers get
+# recycled, and kill(2) delivers to a task's whole thread group — signalling a
+# number some unrelated process has since inherited would take that process
+# down with it. The bracket keeps the pattern from matching this shell.
+pkill -f "/data/adb/modules/battery_info/scripts/[l]ogger\.sh" 2>/dev/null
 
-if [ -f "$PIDFILE" ]; then
-	pid="$(cat "$PIDFILE" 2>/dev/null)"
-	[ -n "$pid" ] && kill "$pid" 2>/dev/null
-	rm -f "$PIDFILE"
-fi
-
-# Note: $DATA_DIR (config.sh, battery.csv) is left in place on purpose.
+# Note: /data/adb/battery_info (config.sh, battery.csv) is left in place on
+# purpose, as is any logger.pid an older version of this module left behind.
+exit 0

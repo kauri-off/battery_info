@@ -32,6 +32,11 @@ export function App() {
 		toast(next.enabled ? `Logging every ${next.interval}s` : "Logging paused");
 	};
 
+	const handleStart = async () => {
+		await battery.start();
+		toast("Logger started");
+	};
+
 	const handleExport = async () => {
 		const msg = await battery.exportLog();
 		toast(msg.split("\n").pop() || "Exported");
@@ -100,7 +105,9 @@ export function App() {
 
 				<ControlsPanel
 					config={battery.config}
+					daemonPid={battery.daemonPid}
 					onApply={handleApply}
+					onStart={handleStart}
 					onExport={handleExport}
 					onClear={handleClear}
 				/>

@@ -12,6 +12,4 @@ while [ "$(getprop sys.boot_completed)" != "1" ]; do
 done
 
 ensure_data
-
-# Launch the logger detached; it self-guards against duplicate instances.
-nohup sh "$MODDIR/scripts/logger.sh" >/dev/null 2>&1 &
+start_daemon

@@ -3,7 +3,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-	clearLog, exportCsv, readConfig, readLive, readLog, writeConfig,
+	clearLog, exportCsv, readConfig, readDaemonPid, readLive, readLog,
+	startDaemon, writeConfig,
 } from "../lib/battery";
 import { DEFAULT_CONFIG } from "../lib/battery";
 import type { BatteryRow, Config } from "../lib/types";
@@ -15,12 +16,16 @@ export type UseBattery = {
 	rows: BatteryRow[];
 	live: BatteryRow | null;
 	config: Config;
+	/** Pid of the running logger daemon, or null when nothing is sampling. */
+	daemonPid: number | null;
 	error: string | null;
 	/** True until the first log read resolves — drives the initial skeleton. */
 	loading: boolean;
 	/** True while a log refetch is in flight, so charts can dim in place. */
 	refreshing: boolean;
 	setConfig: (next: Config) => Promise<void>;
+	/** Spawn the daemon. Idempotent — logger.sh's flock dedupes instances. */
+	start: () => Promise<void>;
 	clear: () => Promise<void>;
 	exportLog: () => Promise<string>;
 	dismissError: () => void;
@@ -30,6 +35,7 @@ export function useBattery(): UseBattery {
 	const [rows, setRows] = useState<BatteryRow[]>([]);
 	const [live, setLive] = useState<BatteryRow | null>(null);
 	const [config, setConfigState] = useState<Config>(DEFAULT_CONFIG);
+	const [daemonPid, setDaemonPid] = useState<number | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [refreshing, setRefreshing] = useState(false);
@@ -38,6 +44,7 @@ export function useBattery(): UseBattery {
 	// a slow `cat` of a large CSV outlives its interval.
 	const liveBusy = useRef(false);
 	const logBusy = useRef(false);
+	const daemonBusy = useRef(false);
 	const mounted = useRef(true);
 
 	const fail = useCallback((e: unknown) => {
@@ -65,6 +72,20 @@ export function useBattery(): UseBattery {
 		}
 	}, [fail]);
 
+	// Never routed through fail(): a daemon check that cannot run says "stopped",
+	// which is what the badge should show anyway, and raising a banner for it
+	// every poll would bury the errors that do need reading.
+	const refreshDaemon = useCallback(async () => {
+		if (daemonBusy.current) return;
+		daemonBusy.current = true;
+		try {
+			const pid = await readDaemonPid();
+			if (mounted.current) setDaemonPid(pid);
+		} finally {
+			daemonBusy.current = false;
+		}
+	}, []);
+
 	const refreshLive = useCallback(async () => {
 		if (liveBusy.current) return;
 		liveBusy.current = true;
@@ -86,25 +107,47 @@ export function useBattery(): UseBattery {
 		readConfig().then((c) => mounted.current && setConfigState(c)).catch(fail);
 		void refreshLog();
 		void refreshLive();
+		void refreshDaemon();
 		const liveTimer = setInterval(refreshLive, LIVE_POLL_MS);
 		const logTimer = setInterval(refreshLog, LOG_POLL_MS);
+		// The daemon's state only changes on a start, a kill or a reboot, so the
+		// slow cadence is plenty — the paths that change it refresh it directly.
+		const daemonTimer = setInterval(refreshDaemon, LOG_POLL_MS);
 		return () => {
 			mounted.current = false;
 			clearInterval(liveTimer);
 			clearInterval(logTimer);
+			clearInterval(daemonTimer);
 		};
-	}, [fail, refreshLive, refreshLog]);
+	}, [fail, refreshDaemon, refreshLive, refreshLog]);
 
 	const setConfig = useCallback(async (next: Config) => {
 		try {
 			await writeConfig(next);
 			setConfigState(next);
+			// Enabling logging has to mean logging happens. config.sh alone only
+			// speaks to a daemon that is already running, so make sure one is.
+			if (next.enabled) await startDaemon();
 			setError(null);
 		} catch (e) {
 			fail(e);
 			throw e;
+		} finally {
+			void refreshDaemon();
 		}
-	}, [fail]);
+	}, [fail, refreshDaemon]);
+
+	const start = useCallback(async () => {
+		try {
+			await startDaemon();
+			setError(null);
+		} catch (e) {
+			fail(e);
+			throw e;
+		} finally {
+			void refreshDaemon();
+		}
+	}, [fail, refreshDaemon]);
 
 	const clear = useCallback(async () => {
 		try {
@@ -130,8 +173,8 @@ export function useBattery(): UseBattery {
 	}, [fail]);
 
 	return {
-		rows, live, config, error, loading, refreshing,
-		setConfig, clear, exportLog,
+		rows, live, config, daemonPid, error, loading, refreshing,
+		setConfig, start, clear, exportLog,
 		dismissError: () => setError(null),
 	};
 }

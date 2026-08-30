@@ -14,17 +14,26 @@ function intervalLabel(seconds: number): string {
 
 type Props = {
 	config: Config;
+	/** Pid of the running daemon, or null when nothing is sampling. */
+	daemonPid: number | null;
 	onApply: (next: Config) => Promise<void>;
+	onStart: () => Promise<void>;
 	onExport: () => Promise<void>;
 	onClear: () => Promise<void>;
 };
 
 const BTN = "rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors disabled:opacity-50";
+// Its own string rather than BTN plus overrides: conflicting Tailwind
+// utilities resolve by stylesheet order, not by order in the class list.
+const BTN_SM = "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50";
 
-export function ControlsPanel({ config, onApply, onExport, onClear }: Props) {
+export function ControlsPanel({
+	config, daemonPid, onApply, onStart, onExport, onClear,
+}: Props) {
 	const [draft, setDraft] = useState<Config>(config);
-	const [busy, setBusy] = useState<null | "apply" | "export" | "clear">(null);
+	const [busy, setBusy] = useState<null | "apply" | "start" | "export" | "clear">(null);
 	const [confirmClear, setConfirmClear] = useState(false);
+	const running = daemonPid !== null;
 
 	// Adopt values read back from the device, but never stomp a pending edit.
 	useEffect(() => setDraft(config), [config]);
@@ -37,7 +46,7 @@ export function ControlsPanel({ config, onApply, onExport, onClear }: Props) {
 
 	const dirty = draft.enabled !== config.enabled || draft.interval !== config.interval;
 
-	const run = async (key: "apply" | "export" | "clear", fn: () => Promise<void>) => {
+	const run = async (key: "apply" | "start" | "export" | "clear", fn: () => Promise<void>) => {
 		setBusy(key);
 		try {
 			await fn();
@@ -50,6 +59,39 @@ export function ControlsPanel({ config, onApply, onExport, onClear }: Props) {
 
 	return (
 		<section className="flex flex-col gap-4 rounded-xl border border-hairline bg-surface p-4">
+			{/* The daemon is what actually samples; the toggle below only tells a
+			    running one whether to record. Showing them as one control would
+			    let a dead daemon read as "logging on". */}
+			<div className="flex items-center justify-between gap-3">
+				<span className="text-sm text-ink">Daemon</span>
+				<span className="flex items-center gap-2">
+					<span
+						className={`h-2 w-2 shrink-0 rounded-full ${running ? "bg-good" : "bg-critical"}`}
+						aria-hidden
+					/>
+					<span className="text-xs text-ink-2">
+						{running ? `running · pid ${daemonPid}` : "stopped"}
+					</span>
+					{!running && (
+						<button
+							type="button"
+							disabled={busy !== null}
+							onClick={() => run("start", onStart)}
+							className={`${BTN_SM} border-good bg-good text-white`}
+						>
+							{busy === "start" ? "Starting…" : "Start"}
+						</button>
+					)}
+				</span>
+			</div>
+
+			{!running && (
+				<p className="-mt-2 text-xs text-muted">
+					Nothing is being sampled. Starting the daemon is safe at any time —
+					it takes a lock, so a second copy can never run.
+				</p>
+			)}
+
 			<div className="flex items-center justify-between gap-4">
 				<label htmlFor="logging" className="text-sm text-ink">Logging</label>
 				<button

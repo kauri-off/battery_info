@@ -124,6 +124,35 @@ export async function exportCsv(): Promise<string> {
 	return (await sh(`sh ${MODDIR}/action.sh`)).trim();
 }
 
+// ---- Daemon ---------------------------------------------------------------
+
+/** First pid daemon_pid printed, or null when it printed nothing usable. */
+export function parseDaemonPid(stdout: string): number | null {
+	const first = stdout.split("\n").map((l) => l.trim()).find(Boolean);
+	if (first === undefined) return null;
+	const n = Number(first);
+	return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+// Whether the logger daemon is alive. This drives a badge, not a decision:
+// correctness rests on the flock in logger.sh, so a device whose shell lacks
+// pgrep reports "stopped" and still behaves correctly — Start just spawns an
+// instance that either takes the lock or exits.
+export async function readDaemonPid(): Promise<number | null> {
+	try {
+		return parseDaemonPid(await sh(`. ${COMMON}; daemon_pid`));
+	} catch {
+		return null;
+	}
+}
+
+// Start the daemon. Idempotent by construction: logger.sh takes an flock, so a
+// second instance exits at once. That is what lets the UI offer this without
+// checking first and without racing the one service.sh starts at boot.
+export async function startDaemon(): Promise<void> {
+	await sh(`. ${COMMON}; start_daemon`);
+}
+
 // ---- Derived stats ------------------------------------------------------
 
 /** Window used to estimate the drain/charge rate. */
