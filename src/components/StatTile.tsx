@@ -1,22 +1,16 @@
-// StatTile.tsx — label + value figure. `hero` is the one oversized number on
-// the page (battery level); everything else is a regular tile.
-
-import type { ReactNode } from "react";
-
 type Props = {
 	label: string;
 	value: string;
-	/** Secondary line under the value. Adds a line — hero tiles only. */
+	/** Secondary line under the value. */
 	note?: string | undefined;
-	/** Qualifier beside the label, e.g. the health string. Costs no height, so
-	    tiles carrying one stay level with their row neighbour. */
+	/** Qualifier beside the label; costs no height. */
 	hint?: string | undefined;
+	/** The one oversized figure on the page. */
 	hero?: boolean;
 	span?: 2;
-	children?: ReactNode;
 };
 
-export function StatTile({ label, value, note, hint, hero, span, children }: Props) {
+export function StatTile({ label, value, note, hint, hero, span }: Props) {
 	return (
 		<div
 			className={[
@@ -28,8 +22,6 @@ export function StatTile({ label, value, note, hint, hero, span, children }: Pro
 				<span className="truncate uppercase tracking-wide">{label}</span>
 				{hint && <span className="shrink-0 text-ink-2">{hint}</span>}
 			</span>
-			{/* Large standalone figures use proportional digits; tabular-nums is
-			    for columns that must align. */}
 			<span
 				className={[
 					"truncate font-semibold text-ink",
@@ -39,7 +31,6 @@ export function StatTile({ label, value, note, hint, hero, span, children }: Pro
 				{value}
 			</span>
 			{note && <span className="truncate text-xs text-ink-2">{note}</span>}
-			{children}
 		</div>
 	);
 }

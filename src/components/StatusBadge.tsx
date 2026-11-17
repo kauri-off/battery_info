@@ -1,6 +1,3 @@
-// StatusBadge.tsx — charge state in the header. A status color never carries
-// the meaning alone: the badge always spells the state out beside the dot.
-
 type Props = {
 	status: string;
 	pct: number | null;

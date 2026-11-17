@@ -1,16 +1,15 @@
 {
   "name": "battery-info-module",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
   "description": "KernelSU Next WebUI module that logs battery metrics over time.",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "node build.mjs",
-    "zip": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "clean": "node -e \"import('node:fs').then(fs=>{fs.rmSync('module/webroot',{recursive:true,force:true});fs.rmSync('dist',{recursive:true,force:true})})\""
+    "clean": "rm -rf module/webroot module/icon.png module/action.png dist"
   },
   "dependencies": {
     "kernelsu": "^3.0.2",

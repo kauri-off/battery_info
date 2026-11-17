@@ -19,18 +19,30 @@ jobs:
 
       - run: npm ci
 
+      - name: Shellcheck
+        run: shellcheck -x module/*.sh module/scripts/*.sh
+
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unit tests
+      - name: Tests
         run: npm test
+
+      # Android's sh is mksh and the installer runs under busybox.
+      - name: Module scripts under other shells
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends mksh busybox
+          for shell in bash mksh "busybox sh"; do
+            echo "::group::$shell"
+            TEST_SH="$shell" npx vitest run test/
+            echo "::endgroup::"
+          done
 
       - name: Build module zip
         run: npm run build
 
-      # build.mjs regenerates docs/update.json from module.prop. If the commit
-      # bumped the version without rebuilding, the manifest would advertise a
-      # stale versionCode and auto-update would never fire — fail loudly here.
+      # A version bump without a rebuild would leave update.json advertising the old one.
       - name: Auto-update manifest is in sync with module.prop
         run: git diff --exit-code docs/update.json docs/index.html
 

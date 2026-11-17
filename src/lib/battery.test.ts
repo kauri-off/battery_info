@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
-	derive, filterByRange, normCurrent, parseConfig, parseDaemonPid, parseLog, parseRow,
+	chartRows, derive, normCurrent, parseLog, parseRow, parseRows, parseState, thin,
 } from "./battery";
-import { CSV_HEADER } from "./types";
-import type { BatteryRow } from "./types";
+import { CSV_HEADER, type Sample } from "./types";
 
-// Build a CSV line from partial fields, defaulting to a plausible sample.
-function line(over: Partial<Record<string, string | number>> = {}): string {
+type Fields = Partial<Record<string, string | number>>;
+
+function line(over: Fields = {}): string {
 	const f = {
 		epoch: 1_700_000_000, iso: "2023-11-14T22:13:20+0100", capacity: 63,
 		status: "Discharging", voltage_uv: 3_980_000, current_ua: -920_000,
-		temp_dc: 312, charge_counter_uah: 2_646_000, cycle_count: 137,
+		temp_dc: 312, charge_counter_uah: "", cycle_count: 137,
 		health: "Good", charge_full: 4_210_000, charge_full_design: 4_500_000,
 		...over,
 	};
@@ -20,19 +20,14 @@ function line(over: Partial<Record<string, string | number>> = {}): string {
 	].join(",");
 }
 
-// A minimal row for derive(): only the fields it reads. Discharging, as the
-// default sample is; charging() is the same row plugged in.
-function row(t: number, pct: number, over: Partial<BatteryRow> = {}): BatteryRow {
-	return { ...parseRow(line({ epoch: t, capacity: pct }))!, ...over };
-}
+const row = (t: number, pct: number, over: Fields = {}): Sample =>
+	parseRow(line({ epoch: t, capacity: pct, ...over }))!;
 
-function charging(t: number, pct: number): BatteryRow {
-	return parseRow(line({ epoch: t, capacity: pct, status: "Charging", current_ua: 1_200_000 }))!;
-}
+const charging = (t: number, pct: number): Sample =>
+	row(t, pct, { status: "Charging", current_ua: 1_200_000 });
 
 describe("normCurrent", () => {
 	it("forces the sign from status, whatever the device reports", () => {
-		// Same magnitude, opposite raw signs -> status decides.
 		expect(normCurrent(900_000, "Charging")).toBe(900);
 		expect(normCurrent(-900_000, "Charging")).toBe(900);
 		expect(normCurrent(900_000, "Discharging")).toBe(-900);
@@ -52,12 +47,15 @@ describe("normCurrent", () => {
 
 describe("parseRow", () => {
 	it("converts sysfs units to display units", () => {
-		const r = parseRow(line())!;
+		const r = parseRow(line({ charge_counter_uah: 2_646_000 }))!;
 		expect(r.t).toBe(1_700_000_000);
 		expect(r.pct).toBe(63);
 		expect(r.tempC).toBeCloseTo(31.2);
 		expect(r.voltageV).toBeCloseTo(3.98);
 		expect(r.mA).toBe(-920);
+		expect(r.chargeUah).toBe(2_646_000);
+		expect(r.cycles).toBe(137);
+		expect(r.fullUah).toBe(4_210_000);
 	});
 
 	it("maps missing nodes to null, not 0", () => {
@@ -72,78 +70,97 @@ describe("parseRow", () => {
 		const r = parseRow("1700000000,2023-11-14T22:13:20+0100,63,Discharging")!;
 		expect(r.pct).toBe(63);
 		expect(r.tempC).toBeNull();
-		expect(r.charge_full).toBe("");
+		expect(r.fullUah).toBeNull();
 	});
 
 	it("rejects lines without a usable epoch", () => {
 		expect(parseRow("")).toBeNull();
+		expect(parseRow(CSV_HEADER)).toBeNull();
 		expect(parseRow("not-a-number,x,50")).toBeNull();
 	});
 });
 
+describe("parseRows", () => {
+	it("skips junk and sorts by time", () => {
+		const rows = parseRows([CSV_HEADER, line({ epoch: 300 }), "garbage", line({ epoch: 100 })]);
+		expect(rows.map((r) => r.t)).toEqual([100, 300]);
+	});
+});
+
+describe("thin", () => {
+	const rows = [0, 10, 20, 30, 40, 50, 60, 70].map((t) => row(t, 50));
+
+	it("keeps the first row of each bucket and always the newest", () => {
+		expect(thin(rows, 30, Infinity).map((r) => r.t)).toEqual([0, 30, 60, 70]);
+	});
+
+	it("never thins the dense tail", () => {
+		expect(thin(rows, 30, 45).map((r) => r.t)).toEqual([0, 30, 50, 60, 70]);
+	});
+
+	it("leaves rows alone when the bucket is a single second", () => {
+		expect(thin(rows, 1, Infinity)).toBe(rows);
+	});
+});
+
 describe("parseLog", () => {
-	it("drops the header, skips junk and sorts by time", () => {
-		const text = [
-			CSV_HEADER,
-			line({ epoch: 300 }),
-			"",
-			"garbage",
-			line({ epoch: 100 }),
-			line({ epoch: 200 }),
-		].join("\n");
-		expect(parseLog(text).map((r) => r.t)).toEqual([100, 200, 300]);
+	it("reads rows and metadata", () => {
+		const log = parseLog([
+			"#now=1000", "#from=400", "#bucket=2", "#bytes=5180217",
+			line({ epoch: 500 }), line({ epoch: 900 }),
+			"#rows=50589", "#total=762", "",
+		].join("\n"));
+		expect(log.rows.map((r) => r.t)).toEqual([500, 900]);
+		expect(log).toMatchObject({ now: 1000, from: 400, total: 762, fileRows: 50589, fileBytes: 5180217 });
+	});
+
+	it("windows and thins a raw dump itself", () => {
+		const epochs = [100, 5000, 5010, 5020, 5100, 9000, 9500];
+		const log = parseLog([
+			"#now=10000", "#from=5000", "#bucket=100", "#bytes=1", "#raw=1",
+			CSV_HEADER, ...epochs.map((epoch) => line({ epoch })),
+		].join("\n"));
+		expect(log.rows.map((r) => r.t)).toEqual([5000, 5100, 9000, 9500]);
+		expect(log.fileRows).toBe(7);
+		expect(log.total).toBe(6);
 	});
 
 	it("handles an empty log", () => {
-		expect(parseLog("")).toEqual([]);
-		expect(parseLog(`${CSV_HEADER}\n`)).toEqual([]);
+		const log = parseLog("#now=1000\n#from=1000\n#bucket=1\n#bytes=120\n#rows=0\n#total=0\n");
+		expect(log.rows).toEqual([]);
+		expect(log.total).toBe(0);
 	});
 });
 
-describe("parseConfig", () => {
-	it("defaults when the file is missing or empty", () => {
-		expect(parseConfig("")).toEqual({ enabled: true, interval: 60 });
+describe("parseState", () => {
+	it("reads every field", () => {
+		const s = parseState([
+			"config=0,300",
+			"daemon=4321 4400",
+			`row=${line({ epoch: 2000, capacity: 41 })}`,
+			`last=${line({ epoch: 1950 })}`,
+		].join("\n"));
+		expect(s.config).toEqual({ enabled: false, interval: 300 });
+		expect(s.daemonPids).toEqual([4321, 4400]);
+		expect(s.live?.pct).toBe(41);
+		expect(s.lastLogged?.t).toBe(1950);
 	});
 
-	it("reads both keys", () => {
-		expect(parseConfig("LOG_ENABLED=0\nLOG_INTERVAL=300\n")).toEqual({
-			enabled: false, interval: 300,
-		});
+	it("reports no daemon when pgrep printed nothing", () => {
+		expect(parseState("config=1,60\ndaemon=\n").daemonPids).toEqual([]);
 	});
 
-	it("keeps the other default when the config is partial", () => {
-		expect(parseConfig("LOG_ENABLED=0\n")).toEqual({ enabled: false, interval: 60 });
-		expect(parseConfig("LOG_INTERVAL=15\n")).toEqual({ enabled: true, interval: 15 });
+	it("never reads a stray word as a live daemon", () => {
+		expect(parseState("daemon=pgrep: bad usage 0 -1 12.5\n").daemonPids).toEqual([]);
 	});
 
-	it("rejects an interval below the daemon's floor", () => {
-		expect(parseConfig("LOG_INTERVAL=1\n").interval).toBe(60);
-	});
-});
-
-describe("parseDaemonPid", () => {
-	it("reads the pid pgrep printed", () => {
-		expect(parseDaemonPid("4321\n")).toBe(4321);
-		expect(parseDaemonPid("  4321  ")).toBe(4321);
+	it("has no last sample while the log holds only its header", () => {
+		expect(parseState(`last=${CSV_HEADER}\n`).lastLogged).toBeNull();
 	});
 
-	it("takes the first pid when several matched", () => {
-		expect(parseDaemonPid("4321\n4322\n")).toBe(4321);
-	});
-
-	it("reports no daemon when nothing was printed", () => {
-		// pgrep exits 1 and prints nothing when it matches no process; a shell
-		// without pgrep at all prints nothing either. Both mean "not running".
-		expect(parseDaemonPid("")).toBeNull();
-		expect(parseDaemonPid("\n \n")).toBeNull();
-	});
-
-	it("rejects output that is not a pid", () => {
-		// A stray warning on stdout must never read as a live daemon.
-		expect(parseDaemonPid("pgrep: bad usage\n")).toBeNull();
-		expect(parseDaemonPid("0\n")).toBeNull();
-		expect(parseDaemonPid("-1\n")).toBeNull();
-		expect(parseDaemonPid("12.5\n")).toBeNull();
+	it("falls back to defaults", () => {
+		expect(parseState("").config).toEqual({ enabled: true, interval: 60 });
+		expect(parseState("config=1,2\n").config.interval).toBe(60);
 	});
 });
 
@@ -157,85 +174,103 @@ describe("derive", () => {
 	});
 
 	it("prefers the live sample over the newest logged row", () => {
-		const live = parseRow(line({ epoch: 999, capacity: 41 }))!;
-		expect(derive([row(100, 90)], live).pct).toBe(41);
+		expect(derive([row(100, 90)], row(999, 41)).pct).toBe(41);
 		expect(derive([row(100, 90)], null).pct).toBe(90);
 	});
 
 	it("computes health % from charge_full / charge_full_design", () => {
-		const live = parseRow(line({ charge_full: 4_210_000, charge_full_design: 4_500_000 }))!;
-		expect(derive([], live).healthPct).toBeCloseTo(93.56, 1);
+		expect(derive([], row(0, 50)).healthPct).toBeCloseTo(93.56, 1);
 	});
 
 	it("leaves health % null when the design capacity is missing", () => {
-		const live = parseRow(line({ charge_full_design: "" }))!;
-		expect(derive([], live).healthPct).toBeNull();
+		expect(derive([], row(0, 50, { charge_full_design: "" })).healthPct).toBeNull();
 	});
 
 	it("estimates time to empty while discharging", () => {
-		// 50% -> 40% over 30 min = -20 %/h; 40% left -> 2h.
 		const rows = [row(0, 50), row(1800, 40)];
 		const d = derive(rows, rows[1]!);
 		expect(d.ratePerHour).toBeCloseTo(-20);
-		expect(d.eta).toBe("2h 0m to empty");
+		expect(d.eta).toEqual({ hours: 2, to: "empty" });
 	});
 
 	it("estimates time to full while charging", () => {
-		// 40% -> 50% over 30 min = +20 %/h; 50% to go -> 2h30m.
 		const rows = [charging(0, 40), charging(1800, 50)];
 		const d = derive(rows, rows[1]!);
 		expect(d.ratePerHour).toBeCloseTo(20);
-		expect(d.eta).toBe("2h 30m to full");
+		expect(d.eta).toEqual({ hours: 2.5, to: "full" });
+	});
+
+	it("prefers the charge counter over the 1% steps of the level", () => {
+		// The level has not ticked yet, but 105 mAh of 4210 left in 30 min.
+		const rows = [
+			row(0, 57, { charge_counter_uah: 2_400_000 }),
+			row(1800, 57, { charge_counter_uah: 2_294_750 }),
+		];
+		const d = derive(rows, rows[1]!);
+		expect(d.ratePerHour).toBeCloseTo(-5);
+		expect(d.eta?.hours).toBeCloseTo(11.4);
+	});
+
+	it("ignores a charge counter that moves faster than any charger", () => {
+		const rows = [
+			row(0, 50, { charge_counter_uah: 20_000_000 }),
+			row(1800, 40, { charge_counter_uah: 0 }),
+		];
+		expect(derive(rows, rows[1]!).ratePerHour).toBeCloseTo(-20);
 	});
 
 	it("ignores the charge session that just ended", () => {
-		// Unplugged one sample ago: the climb from 75% to 85% is over, and the
-		// only thing the phone is doing now is draining.
 		const rows = [
 			charging(0, 75), charging(900, 80), charging(1500, 85),
 			row(1800, 85), row(2400, 84),
 		];
 		const d = derive(rows, rows[4]!);
 		expect(d.ratePerHour).toBeCloseTo(-6);
-		expect(d.eta).toBe("14h 0m to empty");
+		expect(d.eta).toEqual({ hours: 14, to: "empty" });
 	});
 
 	it("shows no rate while discharging against a rising level", () => {
-		// Level ticked up inside the discharge session (gauge rounding). A
-		// positive rate — and a "to full" ETA — would contradict the current.
 		const rows = [row(0, 84), row(1800, 85)];
 		const d = derive(rows, rows[1]!);
 		expect(d.ratePerHour).toBeNull();
 		expect(d.eta).toBeNull();
 	});
 
+	it("shows no rate until the session is a few minutes old", () => {
+		// Unplugged 10 s ago: one tick over 10 s is not -360 %/h.
+		const rows = [charging(0, 85), row(1790, 85), row(1800, 84)];
+		const d = derive(rows, rows[2]!);
+		expect(d.ratePerHour).toBeNull();
+		expect(d.eta).toBeNull();
+	});
+
 	it("carries the rate to the live sample", () => {
-		// 50% -> 40% between the last logged row and the live read.
-		const rows = [row(0, 50)];
-		const d = derive(rows, row(1800, 40));
+		const d = derive([row(0, 50)], row(1800, 40));
 		expect(d.ratePerHour).toBeCloseTo(-20);
-		expect(d.eta).toBe("2h 0m to empty");
+		expect(d.eta).toEqual({ hours: 2, to: "empty" });
 	});
 
 	it("gives no ETA inside the flat dead band", () => {
-		// Level held steady across the window: a rate exists, but not a forecast.
 		const rows = [row(0, 50), row(1800, 50)];
 		const d = derive(rows, rows[1]!);
 		expect(d.ratePerHour).toBe(0);
 		expect(d.eta).toBeNull();
 	});
 
+	it("gives no ETA to full once the battery is full", () => {
+		const full = { status: "Full", charge_counter_uah: 4_210_000 };
+		const rows = [charging(0, 99), row(1800, 100, full)];
+		expect(derive(rows, rows[1]!).eta).toBeNull();
+	});
+
 	it("gives no rate when the whole window is stale", () => {
-		// Nothing logged in the last 30 min (daemon paused) -> no extrapolation.
 		const rows = [row(0, 50), row(86_400, 51)];
 		expect(derive(rows, rows[1]!).ratePerHour).toBeNull();
 	});
 
 	it("measures the rate over the recent window, ignoring older history", () => {
-		// A charge session 10h ago must not flatten the current drain estimate.
 		const rows = [row(0, 20), row(36_000, 100), row(37_800, 90)];
-		const d = derive(rows, rows[2]!);
-		expect(d.ratePerHour).toBeCloseTo(-20);
+		expect(derive(rows, rows[2]!).ratePerHour).toBeCloseTo(-20);
 	});
 
 	it("needs at least two samples for a rate", () => {
@@ -243,18 +278,19 @@ describe("derive", () => {
 	});
 });
 
-describe("filterByRange", () => {
+describe("chartRows", () => {
 	const rows = [row(0, 50), row(3600, 49), row(7200, 48)];
 
-	it("measures the window back from the newest sample", () => {
-		expect(filterByRange(rows, 1).map((r) => r.t)).toEqual([3600, 7200]);
+	it("clips to the window and ends on the live sample", () => {
+		const out = chartRows(rows, row(7300, 47), 3600);
+		expect(out.map((r) => r.t)).toEqual([3600, 7200, 7300]);
 	});
 
-	it("returns everything for range 0", () => {
-		expect(filterByRange(rows, 0)).toHaveLength(3);
+	it("does not repeat a live sample the log already holds", () => {
+		expect(chartRows(rows, row(7200, 48), 0)).toHaveLength(3);
 	});
 
 	it("handles an empty log", () => {
-		expect(filterByRange([], 24)).toEqual([]);
+		expect(chartRows([], null, 0)).toEqual([]);
 	});
 });

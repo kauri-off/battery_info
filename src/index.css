@@ -1,9 +1,6 @@
 @import "tailwindcss";
 
-/* Design tokens. Light values are the defaults; the dark set below is a
-   selected palette for the dark surface, not an inversion of this one.
-   Chart colors live here too — SVG resolves CSS vars, so switching themes
-   repaints the charts without a React re-render. */
+/* Light tokens; the dark set below is its own palette, not an inversion. */
 @theme {
 	--font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
@@ -17,8 +14,7 @@
 	--color-grid: #e1e0d9;
 	--color-axis: #c3c2b7;
 
-	/* Categorical slots 1-3 of the reference palette; validated all-pairs
-	   against both surfaces (CVD ΔE 9.2 light / 9.4 dark). */
+	/* Validated pairwise for color-vision deficiency on both surfaces. */
 	--color-series-level: #2a78d6;
 	--color-series-current: #eb6834;
 	--color-series-temp: #1baf7a;
@@ -68,9 +64,7 @@ body {
 	overscroll-behavior-y: contain;
 }
 
-/* Recharts marks its root SVG focusable, so a tap leaves a focus ring behind
-   and a drag along the line starts a text selection over the tick labels.
-   Neither means anything here — the tooltip already follows the touch. */
+/* A tap must not leave a focus ring, nor a drag select the tick labels. */
 .recharts-wrapper,
 .recharts-wrapper * {
 	outline: none;

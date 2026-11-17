@@ -1,19 +1,18 @@
-// battery.ts — data layer for the Battery Info Logger WebUI. Reads/writes the
-// module's config, log CSV and live battery state over the root shell, and
-// derives the summary stats the dashboard shows.
-
-import { sh, q, MODULE_ID } from "./ksu";
-import { fmtHours } from "./format";
-import { COLUMNS, CSV_HEADER, type BatteryRow, type Config, type Derived } from "./types";
-
-export const MODDIR = `/data/adb/modules/${MODULE_ID}`;
-export const DATA_DIR = `/data/adb/${MODULE_ID}`;
-export const CONFIG = `${DATA_DIR}/config.sh`;
-export const CSV = `${DATA_DIR}/battery.csv`;
-export const COMMON = `${MODDIR}/scripts/battery_common.sh`;
+import {
+	COLUMNS, type Config, type DeviceState, type Eta, type LogWindow, type Sample, type Stats,
+} from "./types";
 
 export const DEFAULT_CONFIG: Config = { enabled: true, interval: 60 };
 export const MIN_INTERVAL = 5;
+/** The device never thins rows newer than this; the rate is measured on them. */
+export const DENSE_S = 30 * 60;
+
+const RATE_WINDOW_S = DENSE_S;
+const RATE_MIN_SPAN_S = 5 * 60;
+/** Below this |%/h| the trend is noise, not a forecast. */
+const RATE_DEADBAND = 0.1;
+/** Faster than any real charger: a charge counter saying so is broken. */
+const RATE_MAX = 600;
 
 function toNum(v: string | undefined): number | null {
 	if (v === undefined || v === "") return null;
@@ -21,151 +20,123 @@ function toNum(v: string | undefined): number | null {
 	return Number.isFinite(n) ? n : null;
 }
 
-// current_now's sign convention varies across devices. Normalize to mA where
-// charging is positive and discharging is negative, using status as truth.
+// current_now's sign convention varies by device, so status decides the sign.
 export function normCurrent(ua: number | null, status: string): number | null {
 	if (ua === null) return null;
 	const mA = ua / 1000;
-	const mag = Math.abs(mA);
-	if (status === "Charging" || status === "Full") return mag;
-	if (status === "Discharging") return -mag;
-	return mA; // Not charging / Unknown: keep the raw sign.
+	if (status === "Charging" || status === "Full") return Math.abs(mA);
+	if (status === "Discharging") return -Math.abs(mA);
+	return mA;
 }
 
-// Parse one CSV data line into a row. Missing trailing fields become "".
-export function parseRow(line: string): BatteryRow | null {
-	const parts = line.split(",");
-	const raw = {} as Record<(typeof COLUMNS)[number], string>;
-	COLUMNS.forEach((c, i) => (raw[c] = parts[i] ?? ""));
+export function parseRow(line: string): Sample | null {
+	const parts = line.trim().split(",");
+	const f = {} as Record<(typeof COLUMNS)[number], string>;
+	COLUMNS.forEach((c, i) => (f[c] = parts[i] ?? ""));
 
-	const t = toNum(raw.epoch);
-	if (t === null) return null;
-
-	const uv = toNum(raw.voltage_uv);
-	const temp = toNum(raw.temp_dc);
+	if (!/^\d+$/.test(f.epoch)) return null;
+	const temp = toNum(f.temp_dc);
+	const uv = toNum(f.voltage_uv);
 	return {
-		...raw,
-		t,
-		pct: toNum(raw.capacity),
+		t: Number(f.epoch),
+		pct: toNum(f.capacity),
+		status: f.status,
+		mA: normCurrent(toNum(f.current_ua), f.status),
 		tempC: temp === null ? null : temp / 10,
 		voltageV: uv === null ? null : uv / 1e6,
-		mA: normCurrent(toNum(raw.current_ua), raw.status),
+		chargeUah: toNum(f.charge_counter_uah),
+		cycles: toNum(f.cycle_count),
+		health: f.health,
+		fullUah: toNum(f.charge_full),
+		designUah: toNum(f.charge_full_design),
 	};
 }
 
-// Parse the whole CSV: drop the header, skip unparseable lines, sort by time.
-export function parseLog(text: string): BatteryRow[] {
-	const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-	if (lines[0]?.startsWith("epoch")) lines.shift();
-	const rows = lines
-		.map(parseRow)
-		.filter((r): r is BatteryRow => r !== null);
-	rows.sort((a, b) => a.t - b.t);
-	return rows;
+export function parseRows(lines: string[]): Sample[] {
+	const rows = lines.map(parseRow).filter((r): r is Sample => r !== null);
+	return rows.sort((a, b) => a.t - b.t);
 }
 
-// Parse config.sh. Unset or nonsensical values fall back to the defaults.
-export function parseConfig(text: string): Config {
-	const cfg: Config = { ...DEFAULT_CONFIG };
+// One row per bucket, every row from denseFrom on, and always the newest one.
+export function thin(rows: Sample[], bucket: number, denseFrom: number): Sample[] {
+	if (bucket <= 1) return rows;
+	let prev = NaN;
+	return rows.filter((r, i) => {
+		const k = Math.floor(r.t / bucket);
+		const keep = r.t >= denseFrom || k !== prev || i === rows.length - 1;
+		if (keep) prev = k;
+		return keep;
+	});
+}
+
+function splitMeta(text: string): { meta: Map<string, string>; lines: string[] } {
+	const meta = new Map<string, string>();
+	const lines: string[] = [];
 	for (const line of text.split("\n")) {
-		const m = line.match(/^\s*(LOG_ENABLED|LOG_INTERVAL)\s*=\s*(\d+)/);
-		if (!m) continue;
-		if (m[1] === "LOG_ENABLED") cfg.enabled = m[2] === "1";
-		else cfg.interval = Number(m[2]);
+		const m = line.match(/^#(\w+)=(.*)$/);
+		if (m) meta.set(m[1]!, m[2]!.trim());
+		else if (line.trim()) lines.push(line);
 	}
-	if (!Number.isFinite(cfg.interval) || cfg.interval < MIN_INTERVAL) {
-		cfg.interval = DEFAULT_CONFIG.interval;
+	return { meta, lines };
+}
+
+// Output of `webui.sh log`: CSV rows plus #key=value metadata lines.
+export function parseLog(text: string): LogWindow {
+	const { meta, lines } = splitMeta(text);
+	const num = (key: string) => toNum(meta.get(key));
+	let rows = parseRows(lines);
+	const now = num("now") ?? rows.at(-1)?.t ?? Math.floor(Date.now() / 1000);
+	const from = num("from") ?? rows[0]?.t ?? now;
+	let total = num("total") ?? rows.length;
+	let fileRows = num("rows") ?? rows.length;
+
+	// The device had no awk and sent the whole file: do its job here.
+	if (meta.get("raw") === "1") {
+		fileRows = rows.length;
+		rows = rows.filter((r) => r.t >= from);
+		total = rows.length;
+		rows = thin(rows, num("bucket") ?? 1, now - DENSE_S);
 	}
-	return cfg;
+	return { rows, now, from, total, fileRows, fileBytes: num("bytes") ?? 0 };
 }
 
-// ---- Device I/O ---------------------------------------------------------
-
-export async function readLog(): Promise<BatteryRow[]> {
-	try {
-		return parseLog(await sh(`cat ${CSV} 2>/dev/null || true`));
-	} catch {
-		return [];
+// Output of `webui.sh state`: key=value lines.
+export function parseState(text: string): DeviceState {
+	const state: DeviceState = {
+		config: { ...DEFAULT_CONFIG },
+		daemonPids: [],
+		live: null,
+		lastLogged: null,
+	};
+	for (const line of text.split("\n")) {
+		const i = line.indexOf("=");
+		if (i < 0) continue;
+		const value = line.slice(i + 1).trim();
+		switch (line.slice(0, i)) {
+			case "config": {
+				const [enabled, interval] = value.split(",");
+				const seconds = toNum(interval);
+				state.config = {
+					enabled: enabled !== "0",
+					interval: seconds !== null && seconds >= MIN_INTERVAL ? seconds : DEFAULT_CONFIG.interval,
+				};
+				break;
+			}
+			case "daemon":
+				state.daemonPids = value.split(/\s+/).filter((p) => /^[1-9]\d*$/.test(p)).map(Number);
+				break;
+			case "row":
+				state.live = parseRow(value);
+				break;
+			case "last":
+				state.lastLogged = parseRow(value);
+				break;
+		}
 	}
+	return state;
 }
 
-// Read a live sample by sourcing the module's shared shell helper.
-export async function readLive(): Promise<BatteryRow | null> {
-	const out = await sh(`. ${COMMON}; read_row`);
-	const line = out.split("\n").map((l) => l.trim()).find(Boolean);
-	return line ? parseRow(line) : null;
-}
-
-export async function readConfig(): Promise<Config> {
-	try {
-		return parseConfig(await sh(`cat ${CONFIG} 2>/dev/null || true`));
-	} catch {
-		return { ...DEFAULT_CONFIG };
-	}
-}
-
-// Write config.sh atomically so the daemon never sources a half-written file.
-export async function writeConfig({ enabled, interval }: Config): Promise<void> {
-	const en = enabled ? 1 : 0;
-	const iv = Math.max(MIN_INTERVAL, Math.round(interval) || DEFAULT_CONFIG.interval);
-	const tmp = `${CONFIG}.tmp`;
-	await sh(
-		`printf 'LOG_ENABLED=%s\\nLOG_INTERVAL=%s\\n' ${en} ${iv} > ${tmp} && mv ${tmp} ${CONFIG}`,
-	);
-}
-
-// Truncate the log, keeping only the header.
-export async function clearLog(): Promise<void> {
-	await sh(`printf '%s\\n' ${q(CSV_HEADER)} > ${CSV}`);
-}
-
-// Trigger the module's Action export script. Returns its stdout message.
-export async function exportCsv(): Promise<string> {
-	return (await sh(`sh ${MODDIR}/action.sh`)).trim();
-}
-
-// ---- Daemon ---------------------------------------------------------------
-
-/** First pid daemon_pid printed, or null when it printed nothing usable. */
-export function parseDaemonPid(stdout: string): number | null {
-	const first = stdout.split("\n").map((l) => l.trim()).find(Boolean);
-	if (first === undefined) return null;
-	const n = Number(first);
-	return Number.isInteger(n) && n > 0 ? n : null;
-}
-
-// Whether the logger daemon is alive. Drives the badge, and start_daemon uses
-// the same check to decide whether to spawn, so a device whose shell lacks
-// pgrep degrades to "always report stopped, always spawn" — a duplicate
-// logger at worst, never a silent one.
-export async function readDaemonPid(): Promise<number | null> {
-	try {
-		return parseDaemonPid(await sh(`. ${COMMON}; daemon_pid`));
-	} catch {
-		return null;
-	}
-}
-
-// Start the daemon if one is not already running; start_daemon does the check
-// on the device side. Normal operation never needs this — service.sh starts the
-// daemon at boot and it runs until the next one — it is the recovery path for a
-// daemon that was killed.
-export async function startDaemon(): Promise<void> {
-	await sh(`. ${COMMON}; start_daemon`);
-}
-
-// ---- Derived stats ------------------------------------------------------
-
-/** Window used to estimate the drain/charge rate. */
-const RATE_WINDOW_S = 30 * 60;
-/** Below this |%/h| the trend is noise, not a usable estimate. */
-const RATE_DEADBAND = 0.1;
-
-/**
- * Which way the charge is moving: +1 charging, -1 discharging, 0 unknown.
- * Status is the truth (it is what normCurrent signs the current from); the
- * current's own sign only speaks when status carries no direction.
- */
+/** Which way the charge is moving: +1 charging, -1 discharging, 0 unknown. */
 export function direction(status: string, mA: number | null): -1 | 0 | 1 {
 	if (status === "Charging" || status === "Full") return 1;
 	if (status === "Discharging") return -1;
@@ -173,11 +144,9 @@ export function direction(status: string, mA: number | null): -1 | 0 | 1 {
 	return 0;
 }
 
-// Trailing samples that belong to the session running now, i.e. back to the
-// last change of direction. Without this, a charge that ended a few minutes
-// ago still sits inside the rate window and reports a rising level — and a
-// "to full" ETA — for a phone that is currently draining.
-function currentSession(rows: BatteryRow[], dir: -1 | 0 | 1): BatteryRow[] {
+// Trailing samples since the last change of direction, so a charge that just
+// ended cannot report a rising level for a phone that is now draining.
+function currentSession(rows: Sample[], dir: -1 | 0 | 1): Sample[] {
 	let i = rows.length - 1;
 	while (i > 0) {
 		const prev = rows[i - 1]!;
@@ -188,67 +157,64 @@ function currentSession(rows: BatteryRow[], dir: -1 | 0 | 1): BatteryRow[] {
 	return rows.slice(i);
 }
 
-export function derive(rows: BatteryRow[], live: BatteryRow | null): Derived {
-	const last = live ?? rows[rows.length - 1] ?? null;
-	const out: Derived = {
-		pct: last?.pct ?? null,
-		status: last?.status || "Unknown",
-		mA: last?.mA ?? null,
-		tempC: last?.tempC ?? null,
-		voltageV: last?.voltageV ?? null,
-		cycleCount: last ? toNum(last.cycle_count) : null,
-		health: last?.health || null,
-		healthPct: null,
-		ratePerHour: null,
-		eta: null,
-	};
-
-	// Battery health % from charge_full / charge_full_design.
-	const cf = last ? toNum(last.charge_full) : null;
-	const cfd = last ? toNum(last.charge_full_design) : null;
-	if (cf !== null && cfd !== null && cfd > 0) out.healthPct = (cf / cfd) * 100;
-
-	// Drain/charge rate across the recent window. The live sample is newer than
-	// anything logged, so it joins the series when it is.
-	const series = rows.filter((r) => r.pct !== null);
-	if (live?.pct != null && live.t > (series[series.length - 1]?.t ?? -Infinity)) {
-		series.push(live);
-	}
-
-	const dir = direction(out.status, out.mA);
-	const session = currentSession(series, dir);
-	const end = session[session.length - 1];
-	let start = session[0];
-	if (session.length >= 2 && end && start) {
-		const cutoff = end.t - RATE_WINDOW_S;
-		for (const r of session) {
-			if (r.t >= cutoff) { start = r; break; }
-		}
-		const dh = (end.t - start.t) / 3600;
-		if (dh > 0 && end.pct !== null && start.pct !== null) {
-			const rate = (end.pct - start.pct) / dh;
-			// A trend that contradicts the direction the device reports — a 1%
-			// gauge tick the wrong way, a level that hasn't caught up with the
-			// cable being pulled — is not a measurement worth showing.
-			const agrees = dir === 0 || Math.abs(rate) <= RATE_DEADBAND || Math.sign(rate) === dir;
-			if (agrees) {
-				out.ratePerHour = rate;
-				if (rate < -RATE_DEADBAND && out.pct !== null) {
-					out.eta = `${fmtHours(out.pct / -rate)} to empty`;
-				} else if (rate > RATE_DEADBAND && out.pct !== null) {
-					out.eta = `${fmtHours((100 - out.pct) / rate)} to full`;
-				}
-			}
-		}
-	}
-
-	return out;
+// %/h from the charge counter: far finer than the 1% steps of the level.
+function counterRate(start: Sample, end: Sample, hours: number): number | null {
+	const full = end.fullUah ?? end.designUah;
+	if (start.chargeUah === null || end.chargeUah === null || !full || full <= 0) return null;
+	if (start.chargeUah === end.chargeUah) return null;
+	const rate = ((end.chargeUah - start.chargeUah) / full) * 100 / hours;
+	return Math.abs(rate) <= RATE_MAX ? rate : null;
 }
 
-// Rows inside the selected chart window, measured back from the newest sample.
-export function filterByRange(rows: BatteryRow[], hours: number): BatteryRow[] {
-	if (!hours || !rows.length) return rows;
-	const end = rows[rows.length - 1]!.t;
-	const cutoff = end - hours * 3600;
-	return rows.filter((r) => r.t >= cutoff);
+function measureRate(rows: Sample[], live: Sample | null, dir: -1 | 0 | 1): number | null {
+	const series = rows.filter((r) => r.pct !== null);
+	if (live && live.pct !== null && live.t > (series.at(-1)?.t ?? -Infinity)) series.push(live);
+
+	const session = currentSession(series, dir);
+	const end = session.at(-1);
+	const start = end && session.find((r) => r.t >= end.t - RATE_WINDOW_S);
+	if (!end || !start || end.t - start.t < RATE_MIN_SPAN_S) return null;
+
+	const hours = (end.t - start.t) / 3600;
+	const candidates = [counterRate(start, end, hours), (end.pct! - start.pct!) / hours];
+	// A trend against the direction the device reports is not a measurement.
+	const agrees = (r: number) => dir === 0 || Math.abs(r) <= RATE_DEADBAND || Math.sign(r) === dir;
+	return candidates.find((r): r is number => r !== null && agrees(r)) ?? null;
+}
+
+function estimate(pct: number | null, rate: number | null, status: string): Eta | null {
+	if (pct === null || rate === null || status === "Full") return null;
+	if (rate < -RATE_DEADBAND) return { hours: pct / -rate, to: "empty" };
+	if (rate > RATE_DEADBAND && pct < 100) return { hours: (100 - pct) / rate, to: "full" };
+	return null;
+}
+
+export function derive(rows: Sample[], live: Sample | null): Stats {
+	const last = live ?? rows.at(-1) ?? null;
+	const status = last?.status || "Unknown";
+	const pct = last?.pct ?? null;
+	const mA = last?.mA ?? null;
+	const ratePerHour = measureRate(rows, live, direction(status, mA));
+
+	const full = last?.fullUah ?? null;
+	const design = last?.designUah ?? null;
+	return {
+		pct,
+		status,
+		mA,
+		tempC: last?.tempC ?? null,
+		voltageV: last?.voltageV ?? null,
+		cycles: last?.cycles ?? null,
+		health: last?.health || null,
+		healthPct: full !== null && design !== null && design > 0 ? (full / design) * 100 : null,
+		ratePerHour,
+		eta: estimate(pct, ratePerHour, status),
+	};
+}
+
+// The window's rows with the live sample as the newest point, clipped to `from`.
+export function chartRows(rows: Sample[], live: Sample | null, from: number): Sample[] {
+	const out = rows.filter((r) => r.t >= from);
+	if (live && live.t >= from && live.t > (out.at(-1)?.t ?? -Infinity)) out.push(live);
+	return out;
 }

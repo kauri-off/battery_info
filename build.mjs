@@ -1,6 +1,4 @@
-// build.mjs — bundle the WebUI into module/webroot, generate icons, refresh the
-// auto-update manifest, and zip the module into dist/battery_info.zip. Run via
-// `npm run build`.
+// Bundles the WebUI, draws the icons, refreshes update.json and zips the module.
 
 import { build } from "vite";
 import { ZipArchive } from "archiver";
@@ -16,21 +14,15 @@ const WEBROOT = path.join(MODULE, "webroot");
 const DIST = path.join(ROOT, "dist");
 const DOCS = path.join(ROOT, "docs");
 
-// Where releases and the GitHub Pages site live. Change these two and every
-// generated URL (update.json, its zipUrl, the changelog link) follows.
+// Every generated URL follows these two.
 const GH_OWNER = "kauri-off";
 const GH_REPO = "battery_info";
 
-// Vite (see vite.config.ts) emits a single self-contained index.html into
-// module/webroot — JS and CSS inlined, no asset paths for the WebView to
-// resolve.
 async function bundleWebUI() {
 	await build({ root: ROOT, logLevel: "info" });
 }
 
-// ---- Minimal dependency-free PNG icon generator -------------------------
-
-// Encode an RGBA pixel buffer (w*h*4) as a PNG Buffer.
+// Encodes an RGBA pixel buffer as a PNG.
 function encodePNG(width, height, rgba) {
 	const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 	const chunk = (type, data) => {
@@ -47,11 +39,9 @@ function encodePNG(width, height, rgba) {
 	ihdr.writeUInt32BE(height, 4);
 	ihdr.writeUInt8(8, 8); // bit depth
 	ihdr.writeUInt8(6, 9); // color type RGBA
-	// remaining fields are zero (compression, filter, interlace)
 	const stride = width * 4;
 	const raw = Buffer.alloc((stride + 1) * height);
 	for (let y = 0; y < height; y++) {
-		raw[y * (stride + 1)] = 0; // filter type 0
 		rgba.copy(raw, y * (stride + 1) + 1, y * stride, y * stride + stride);
 	}
 	const idat = zlib.deflateSync(raw, { level: 9 });
@@ -78,10 +68,10 @@ function crc32(buf) {
 	return c ^ 0xffffffff;
 }
 
-// Draw a simple battery glyph on a transparent 96x96 canvas.
+// A battery glyph on a transparent 96x96 canvas.
 function batteryIcon(fillColor) {
 	const S = 96;
-	const buf = Buffer.alloc(S * S * 4); // transparent
+	const buf = Buffer.alloc(S * S * 4);
 	const set = (x, y, [r, g, b, a]) => {
 		if (x < 0 || y < 0 || x >= S || y >= S) return;
 		const i = (y * S + x) * 4;
@@ -91,27 +81,20 @@ function batteryIcon(fillColor) {
 		for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) set(x, y, color);
 	};
 	const border = [230, 233, 238, 255];
-	// Battery terminal (top nub).
 	rect(40, 14, 56, 22, border);
-	// Body outline.
 	rect(26, 22, 70, 82, border);
-	// Inner cutout (transparent).
 	rect(30, 26, 66, 78, [0, 0, 0, 0]);
-	// Fill level (~70%).
 	const top = 26 + Math.round((78 - 26) * 0.3);
 	rect(30, top, 66, 78, fillColor);
 	return encodePNG(S, S, buf);
 }
 
 async function writeIcons() {
-	await fs.writeFile(path.join(MODULE, "icon.png"), batteryIcon([79, 157, 255, 255]));   // blue
-	await fs.writeFile(path.join(MODULE, "action.png"), batteryIcon([53, 196, 138, 255])); // green
+	await fs.writeFile(path.join(MODULE, "icon.png"), batteryIcon([79, 157, 255, 255]));
+	await fs.writeFile(path.join(MODULE, "action.png"), batteryIcon([53, 196, 138, 255]));
 }
 
-// ---- Auto-update manifest -----------------------------------------------
-
-// module.prop is the single source of truth for the version; parse it rather
-// than duplicating the numbers here.
+// module.prop is the single source of truth for the version.
 async function readModuleProp() {
 	const text = await fs.readFile(path.join(MODULE, "module.prop"), "utf8");
 	return Object.fromEntries(
@@ -126,12 +109,14 @@ async function readModuleProp() {
 	);
 }
 
-// docs/update.json is what module.prop's updateJson points at: the manager
-// fetches it, compares versionCode, and offers the zip from the matching
-// release tag. GitHub Pages serves docs/ on push to master.
+// docs/update.json is what module.prop's updateJson points at.
 async function writeUpdateJson() {
 	const prop = await readModuleProp();
-	const tag = prop.version; // already in vX.Y.Z form
+	const pkg = JSON.parse(await fs.readFile(path.join(ROOT, "package.json"), "utf8"));
+	if (prop.version !== `v${pkg.version}`) {
+		throw new Error(`module.prop is ${prop.version} but package.json is ${pkg.version}`);
+	}
+	const tag = prop.version;
 	const manifest = {
 		version: prop.version,
 		versionCode: Number(prop.versionCode),
@@ -144,7 +129,7 @@ async function writeUpdateJson() {
 		`${JSON.stringify(manifest, null, 2)}\n`,
 	);
 
-	// Keep the landing page's version badge on the same source of truth.
+	// The landing page's version badge follows module.prop too.
 	const page = path.join(DOCS, "index.html");
 	const html = await fs.readFile(page, "utf8");
 	const stamped = html.replace(
@@ -159,8 +144,6 @@ async function writeUpdateJson() {
 	return manifest;
 }
 
-// ---- Zip the module -----------------------------------------------------
-
 function zipModule() {
 	return new Promise((resolve, reject) => {
 		const out = createWriteStream(path.join(DIST, "battery_info.zip"));
@@ -168,7 +151,7 @@ function zipModule() {
 		out.on("close", () => resolve(archive.pointer()));
 		archive.on("error", reject);
 		archive.pipe(out);
-		// Zip the CONTENTS of module/ so module.prop sits at the zip root.
+		// The contents of module/, so module.prop sits at the zip root.
 		archive.directory(MODULE, false);
 		archive.finalize();
 	});

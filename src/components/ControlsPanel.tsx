@@ -1,183 +1,199 @@
-// ControlsPanel.tsx — daemon controls. Edits are staged locally and only hit
-// the device on Apply, so a mistyped interval never reaches config.sh.
-
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { MIN_INTERVAL } from "../lib/battery";
+import { fmtAge, fmtInterval } from "../lib/format";
 import type { Config } from "../lib/types";
 
 const PRESETS = [15, 30, 60, 120, 300, 600];
 
-function intervalLabel(seconds: number): string {
-	if (seconds < 60) return `${seconds}s`;
-	const m = seconds / 60;
-	return Number.isInteger(m) ? `${m}m` : `${seconds}s`;
-}
+const BTN = "rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors disabled:opacity-50";
+const BTN_SM = "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50";
+
+type Action = "config" | "start" | "restart" | "export" | "clear";
 
 type Props = {
 	config: Config;
-	/** Pid of the running daemon, or null when nothing is sampling. */
-	daemonPid: number | null;
-	onApply: (next: Config) => Promise<void>;
+	daemonPids: number[];
+	/** False until the device has been read once. */
+	ready: boolean;
+	/** Seconds since the newest logged sample; null when the log is empty. */
+	lastSampleAge: number | null;
+	/** Size of the whole log, e.g. "50,590 samples · 5.2 MB". */
+	logSummary: string | null;
+	onConfig: (next: Config) => Promise<void>;
 	onStart: () => Promise<void>;
+	onRestart: () => Promise<void>;
 	onExport: () => Promise<void>;
 	onClear: () => Promise<void>;
 };
 
-const BTN = "rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors disabled:opacity-50";
-// Its own string rather than BTN plus overrides: conflicting Tailwind
-// utilities resolve by stylesheet order, not by order in the class list.
-const BTN_SM = "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50";
+type Status = {
+	dot: string;
+	title: string;
+	detail: string;
+	fix?: { action: "start" | "restart"; label: string; busyLabel: string };
+};
+
+// One line that says whether samples are landing; the switch alone cannot,
+// because config only speaks to a daemon that is alive.
+function describe(
+	ready: boolean, config: Config, daemonPids: number[], lastSampleAge: number | null,
+): Status {
+	if (!ready) {
+		return { dot: "bg-muted", title: "Connecting…", detail: "Reading the device." };
+	}
+	if (!config.enabled) {
+		return { dot: "bg-muted", title: "Paused", detail: "Nothing is being recorded." };
+	}
+	if (daemonPids.length === 0) {
+		return {
+			dot: "bg-critical",
+			title: "Not running",
+			detail: "The logger daemon has stopped.",
+			fix: { action: "start", label: "Start", busyLabel: "Starting…" },
+		};
+	}
+	if (daemonPids.length > 1) {
+		return {
+			dot: "bg-warning",
+			title: "Recording twice",
+			detail: `${daemonPids.length} loggers are running at once.`,
+			fix: { action: "restart", label: "Restart", busyLabel: "Restarting…" },
+		};
+	}
+	const every = `Every ${fmtInterval(config.interval)}`;
+	return {
+		dot: "bg-good",
+		title: "Recording",
+		detail: lastSampleAge === null ? `${every} · no samples yet` : `${every} · last sample ${fmtAge(lastSampleAge)}`,
+	};
+}
 
 export function ControlsPanel({
-	config, daemonPid, onApply, onStart, onExport, onClear,
+	config, daemonPids, ready, lastSampleAge, logSummary,
+	onConfig, onStart, onRestart, onExport, onClear,
 }: Props) {
-	const [draft, setDraft] = useState<Config>(config);
-	const [busy, setBusy] = useState<null | "apply" | "start" | "export" | "clear">(null);
+	const [busy, setBusy] = useState<Action | null>(null);
 	const [confirmClear, setConfirmClear] = useState(false);
-	const running = daemonPid !== null;
+	const status = describe(ready, config, daemonPids, lastSampleAge);
+	const locked = !ready || busy !== null;
 
-	// Adopt values read back from the device, but never stomp a pending edit.
-	useEffect(() => setDraft(config), [config]);
-
-	// A device may hold an interval that isn't one of ours (hand-edited
-	// config.sh); keep it selectable instead of silently rewriting it.
-	const options = PRESETS.includes(draft.interval)
+	// A hand-edited config may hold an interval that is not a preset.
+	const options = PRESETS.includes(config.interval)
 		? PRESETS
-		: [...PRESETS, draft.interval].sort((a, b) => a - b);
+		: [...PRESETS, config.interval].sort((a, b) => a - b);
 
-	const dirty = draft.enabled !== config.enabled || draft.interval !== config.interval;
-
-	const run = async (key: "apply" | "start" | "export" | "clear", fn: () => Promise<void>) => {
-		setBusy(key);
+	const run = async (action: Action, fn: () => Promise<void>) => {
+		setBusy(action);
 		try {
 			await fn();
 		} catch {
-			/* the hook has already surfaced it in the error banner */
+			/* the hook has put it in the error banner */
 		} finally {
 			setBusy(null);
 		}
 	};
 
 	return (
-		<section className="flex flex-col gap-4 rounded-xl border border-hairline bg-surface p-4">
-			{/* The daemon is what actually samples; the toggle below only tells a
-			    running one whether to record. Showing them as one control would
-			    let a dead daemon read as "logging on". */}
-			<div className="flex items-center justify-between gap-3">
-				<span className="text-sm text-ink">Daemon</span>
-				<span className="flex items-center gap-2">
-					<span
-						className={`h-2 w-2 shrink-0 rounded-full ${running ? "bg-good" : "bg-critical"}`}
-						aria-hidden
-					/>
-					<span className="text-xs text-ink-2">
-						{running ? `running · pid ${daemonPid}` : "stopped"}
-					</span>
-					{!running && (
-						<button
-							type="button"
-							disabled={busy !== null}
-							onClick={() => run("start", onStart)}
-							className={`${BTN_SM} border-good bg-good text-white`}
-						>
-							{busy === "start" ? "Starting…" : "Start"}
-						</button>
-					)}
-				</span>
-			</div>
-
-			{!running && (
-				<p className="-mt-2 text-xs text-muted">
-					Nothing is being sampled. The daemon normally starts itself at boot
-					and runs until the next one; start it here if it was killed.
-				</p>
-			)}
-
-			<div className="flex items-center justify-between gap-4">
-				<label htmlFor="logging" className="text-sm text-ink">Logging</label>
+		<section className="rounded-xl border border-hairline bg-surface">
+			<div className="flex items-center gap-3 p-4">
+				<span className={`h-2.5 w-2.5 shrink-0 rounded-full ${status.dot}`} aria-hidden />
+				<div className="min-w-0 flex-1">
+					<div className="text-sm font-medium text-ink">{status.title}</div>
+					<div className="text-xs text-ink-2">{status.detail}</div>
+				</div>
+				{status.fix && (
+					<button
+						type="button"
+						disabled={locked}
+						onClick={() => run(status.fix!.action, status.fix!.action === "start" ? onStart : onRestart)}
+						className={`${BTN_SM} border-hairline bg-raised text-ink`}
+					>
+						{busy === status.fix.action ? status.fix.busyLabel : status.fix.label}
+					</button>
+				)}
 				<button
-					id="logging"
 					type="button"
 					role="switch"
-					aria-checked={draft.enabled}
-					onClick={() => setDraft((d) => ({ ...d, enabled: !d.enabled }))}
+					aria-checked={config.enabled}
+					aria-label="Logging"
+					disabled={locked}
+					onClick={() => run("config", () => onConfig({ ...config, enabled: !config.enabled }))}
 					className={[
-						"relative h-7 w-12 shrink-0 rounded-full border transition-colors",
-						draft.enabled ? "border-good bg-good" : "border-hairline bg-raised",
+						"relative h-7 w-12 shrink-0 rounded-full border transition-colors disabled:opacity-60",
+						config.enabled ? "border-good bg-good" : "border-hairline bg-raised",
 					].join(" ")}
 				>
 					<span
 						className={[
 							"absolute top-0.5 left-0 h-5 w-5 rounded-full transition-transform",
-							draft.enabled ? "translate-x-6 bg-white" : "translate-x-0.5 bg-muted",
+							config.enabled ? "translate-x-6 bg-white" : "translate-x-0.5 bg-muted",
 						].join(" ")}
 					/>
 				</button>
 			</div>
 
-			<div className="flex items-center justify-between gap-4">
+			<div className="flex items-center justify-between gap-4 border-t border-hairline px-4 py-3">
 				<label htmlFor="interval" className="text-sm text-ink">Interval</label>
 				<select
 					id="interval"
-					value={draft.interval}
-					onChange={(e) => setDraft((d) => ({ ...d, interval: Number(e.target.value) }))}
-					className="rounded-lg border border-hairline bg-raised px-3 py-2 text-sm text-ink"
+					value={config.interval}
+					disabled={locked}
+					onChange={(e) => {
+						const interval = Math.max(MIN_INTERVAL, Number(e.target.value));
+						void run("config", () => onConfig({ ...config, interval }));
+					}}
+					className="rounded-lg border border-hairline bg-raised px-3 py-2 text-sm text-ink disabled:opacity-60"
 				>
 					{options.map((s) => (
-						<option key={s} value={s}>{intervalLabel(s)}</option>
+						<option key={s} value={s}>{fmtInterval(s)}</option>
 					))}
 				</select>
 			</div>
 
-			<div className="flex flex-wrap gap-2">
-				<button
-					type="button"
-					disabled={!dirty || busy !== null}
-					onClick={() => run("apply", () => onApply(draft))}
-					className={`${BTN} border-series-level bg-series-level text-white`}
-				>
-					{busy === "apply" ? "Applying…" : "Apply"}
-				</button>
-				<button
-					type="button"
-					disabled={busy !== null}
-					onClick={() => run("export", onExport)}
-					className={`${BTN} border-hairline bg-raised text-ink`}
-				>
-					{busy === "export" ? "Exporting…" : "Export CSV"}
-				</button>
-				{/* Two-step instead of confirm(): WebViews render native dialogs
-				    inconsistently, and some managers suppress them outright. */}
-				{confirmClear ? (
-					<span className="flex gap-2">
-						<button
-							type="button"
-							disabled={busy !== null}
-							onClick={() => {
-								setConfirmClear(false);
-								void run("clear", onClear);
-							}}
-							className={`${BTN} border-critical bg-critical text-white`}
-						>
-							{busy === "clear" ? "Clearing…" : "Erase all history"}
-						</button>
-						<button
-							type="button"
-							onClick={() => setConfirmClear(false)}
-							className={`${BTN} border-hairline bg-raised text-ink`}
-						>
-							Cancel
-						</button>
-					</span>
-				) : (
+			<div className="flex flex-col gap-3 border-t border-hairline p-4">
+				<div className="flex flex-wrap gap-2">
 					<button
 						type="button"
-						disabled={busy !== null}
-						onClick={() => setConfirmClear(true)}
-						className={`${BTN} border-critical/50 bg-surface text-critical`}
+						disabled={locked}
+						onClick={() => run("export", onExport)}
+						className={`${BTN} border-hairline bg-raised text-ink`}
 					>
-						Clear log
+						{busy === "export" ? "Exporting…" : "Export CSV"}
 					</button>
-				)}
+					{/* Two steps instead of confirm(): some managers suppress native dialogs. */}
+					{confirmClear ? (
+						<>
+							<button
+								type="button"
+								disabled={locked}
+								onClick={() => {
+									setConfirmClear(false);
+									void run("clear", onClear);
+								}}
+								className={`${BTN} border-critical bg-critical text-white`}
+							>
+								Erase all history
+							</button>
+							<button
+								type="button"
+								onClick={() => setConfirmClear(false)}
+								className={`${BTN} border-hairline bg-raised text-ink`}
+							>
+								Cancel
+							</button>
+						</>
+					) : (
+						<button
+							type="button"
+							disabled={locked}
+							onClick={() => setConfirmClear(true)}
+							className={`${BTN} border-critical/50 bg-surface text-critical`}
+						>
+							{busy === "clear" ? "Clearing…" : "Clear log"}
+						</button>
+					)}
+				</div>
+				{logSummary && <p className="text-xs text-muted tabular-nums">{logSummary}</p>}
 			</div>
 		</section>
 	);

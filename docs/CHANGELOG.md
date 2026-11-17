@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.2.0
+
+The WebUI no longer slows down as the log grows, and the daemon can no longer be
+killed by its own config file.
+
+- **The dashboard reads a window, not the file.** It used to pull the entire
+  CSV through the root shell every 30 seconds and draw every row; after a few
+  months that is megabytes per refresh and tens of thousands of points per
+  chart. The device now returns only the selected range, thinned to what a
+  chart can show, so a refresh costs the same on day one and day five hundred.
+  Export still writes the full log.
+- **A broken `config.sh` cannot stop the logger.** The daemon used to source
+  the file, so a syntax error in a hand-edited config ended it silently. The
+  config is now parsed, never executed.
+- **Rate and ETA no longer jump right after plugging in or unplugging.** They
+  are withheld for the first five minutes of a session instead of being
+  extrapolated from a few seconds, and are measured from the charge counter
+  when the device has one, which resolves far below the 1% steps of the level.
+- **One status line says whether samples are landing**: recording (with the age
+  of the last sample), paused, not running, or running twice, with a button to
+  start or restart the daemon. The logging switch and the interval apply at
+  once; there is no separate Apply.
+- **Charts keep their time axis honest.** The axis covers the selected range up
+  to now, so a pause in logging shows as a gap instead of being cropped away,
+  and multi-day ranges label days. Day and half-day ticks did not fall on
+  local midnight outside UTC; they do now. New 7-day range.
+- **Errors stay on screen.** A failed export or clear was erased by the next
+  successful poll three seconds later, and an empty-log export reported a raw
+  exit code. Failed reads of the log or the config were shown as an empty log
+  and default settings; they are reported now.
+- Polling stops while the WebUI is in the background.
+- A peripheral's battery (stylus, headset) is no longer picked as the phone's
+  on devices without a `battery` supply.
+
 ## v1.1.1
 
 Fixes v1.1.0, whose lock could not work on Android and stopped the daemon from

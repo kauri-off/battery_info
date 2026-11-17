@@ -1,10 +1,6 @@
-// DeviceFrame.tsx — dev-only. The WebUI ships into a phone WebView, so the
-// desktop preview renders it at phone size instead of full browser width.
-// Dynamically imported behind import.meta.env.DEV; never in the module zip.
-
 import type { ReactNode } from "react";
 
-/** Pixel-ish logical viewport. */
+// Dev only: renders the WebUI at phone size.
 const WIDTH = 412;
 const HEIGHT = 883;
 

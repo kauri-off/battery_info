@@ -1,6 +1,3 @@
-// ErrorBanner.tsx — surfaces a failed root-shell call without tearing the
-// dashboard down; the last good data stays on screen behind it.
-
 type Props = {
 	message: string;
 	onDismiss: () => void;

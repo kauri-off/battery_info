@@ -1,7 +1,3 @@
-// ChartCard.tsx — frame around a chart. The current reading is printed in text
-// ink beside the title: it names the series (so no legend is needed) and keeps
-// the value readable independent of the line's color.
-
 import type { ReactNode } from "react";
 
 type Props = {

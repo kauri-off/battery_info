@@ -3,9 +3,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
 
-// The WebUI is served by the KSU Next manager straight off the filesystem, so
-// the build collapses to ONE self-contained module/webroot/index.html — no
-// asset paths to resolve, nothing to cache-bust.
+// One self-contained module/webroot/index.html: the WebView resolves no asset paths.
 export default defineConfig({
 	plugins: [react(), tailwindcss(), viteSingleFile()],
 	build: {
@@ -16,6 +14,7 @@ export default defineConfig({
 	},
 	test: {
 		environment: "node",
-		include: ["src/**/*.test.ts"],
+		testTimeout: 20_000,
+		include: ["src/**/*.test.ts", "test/**/*.test.ts"],
 	},
 });
